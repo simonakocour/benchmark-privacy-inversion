@@ -1,0 +1,19 @@
+name: segmentation_diffusion
+model_type: diffusion
+
+condition: segloc, sam, gsff, adek, ppnesf
+base_model_name: mpietran/privacy_inversion/submodules/stable-diffusion-2-1
+hf_repo: mpietran/privacy_inversion
+weights_file: segmentation_inversion_model.pth
+
+#model params
+lora_rank: 64
+network_alpha: 24
+resolution: 512
+downsample_factor: 8
+
+#inference params
+num_inference_steps: 25
+guidance_scale: 1.5
+schedule_type: default
+

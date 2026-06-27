@@ -1,0 +1,2 @@
+from .image_datasets_sparse_descriptors import BaseSparseDescriptorDataset, SparseDescriptorImageDataset
+from .image_datasets_segmentation import BaseSegmentationDataset, SegLocImageDataset

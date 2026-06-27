@@ -1,0 +1,44 @@
+# Core deep learning
+torch==2.5.1
+torchvision==0.20.1
+
+# Diffusion models
+diffusers==0.32.2
+accelerate==1.5.2
+transformers==4.49.0
+huggingface-hub==0.29.3
+safetensors==0.5.3
+
+# Image quality metrics
+lpips==0.1.4
+pytorch-msssim==1.0.0
+torchmetrics==1.7.3
+
+# Graph neural networks (sparse descriptor encoder)
+# Install separately — requires matching torch/CUDA version:
+# pip install torch-geometric -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+torch-geometric==2.6.1
+
+# Vision / image processing
+Pillow==11.1.0
+opencv-python==4.11.0.86
+scikit-image==0.25.2
+matplotlib==3.10.1
+timm
+kornia
+einops
+torch-fidelity
+
+# Scientific computing
+numpy==2.0.1
+scipy==1.15.2
+scikit-learn==1.6.1
+
+# Semantic evaluation (qwen_v2.py)
+qwen-vl-utils==0.0.14
+sentence-transformers==5.2.3
+sentencepiece==0.2.1
+
+# Utilities
+tqdm==4.67.1
+PyYAML==6.0.2

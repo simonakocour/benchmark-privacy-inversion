@@ -1,0 +1,21 @@
+name: descriptor_diffusion
+model_type: diffusion
+
+default_condition: SIFT, SUPERPOINT, XFEAT
+base_model_name: mpietran/privacy_inversion/submodules/stable-diffusion-2-1
+hf_repo: mpietran/privacy_inversion
+weights_file: sparse_descriptors_inversion_model.pth
+
+#model params
+lora_rank: 64
+network_alpha: 24
+resolution: 512
+downsample_factor: 8
+
+#dataset params
+aggregate: false
+
+#inference params
+num_inference_steps: 25
+guidance_scale: 1.5
+schedule_type: default
