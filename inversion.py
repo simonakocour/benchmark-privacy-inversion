@@ -8,7 +8,7 @@ import yaml
 from PIL import Image
 
 from ReprInv.utils.data_util import calculate_centroids_from_mask  # used in prepare_segmentation
-from inference import load_model
+from inference import load_model, resolve_internal_condition
 
 SEGMENTATION_CONDITIONS = ["segloc", "sam", "gsff", "adek", "ppnesf"]
 DESCRIPTOR_CONDITIONS = ["SIFT", "SUPERPOINT", "XFEAT"]
@@ -177,7 +177,8 @@ def main():
         dtype=torch.float32,
     )
 
-    image = run_inversion(model, args.condition, conditioning_tensor, positions, args.device, **pipe_kwargs)
+    internal_condition = resolve_internal_condition(config, args.condition)
+    image = run_inversion(model, internal_condition, conditioning_tensor, positions, args.device, **pipe_kwargs)
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tensor_to_pil(image).save(out_path)

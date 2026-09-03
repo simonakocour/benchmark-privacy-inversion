@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Union
@@ -6,13 +7,16 @@ import cv2
 import numpy as np
 import torch
 import torchvision.transforms as T
-from PIL import Image
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 
 from submodules.superpoint.superpoint_fs import SuperPoint
+from submodules.ninjadesc.loader import BASE_DESCRIPTORS, ensure_2d, load_ninjadesc_models
 
+ImageFile.LOAD_TRUNCATED_IMAGES = True 
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DESCRIPTOR_DIMS = {"SIFT": 128, "SUPERPOINT": 256, "XFEAT": 64}
+_NINJADESC_PATCH_MARGIN = 16
 
 
 def _collect_image_paths(source: Union[str, Path, list]) -> list:
@@ -22,10 +26,45 @@ def _collect_image_paths(source: Union[str, Path, list]) -> list:
     if source.is_file():
         return [source]
     paths = []
-    for ext in _IMG_EXTS:
-        paths.extend(source.rglob(f"*{ext}"))
-        paths.extend(source.rglob(f"*{ext.upper()}"))
+    for root, _dirs, files in os.walk(source, followlinks=True):
+        for name in files:
+            if Path(name).suffix.lower() in _IMG_EXTS:
+                paths.append(Path(root) / name)
     return sorted(set(paths))
+
+
+def _ninjadesc_runtime_device(preferred: torch.device) -> torch.device:
+    try:
+        from torch.utils.data import get_worker_info
+    except Exception:
+        return preferred
+    if get_worker_info() is not None and preferred.type == "cuda":
+        return torch.device("cpu")
+    return preferred
+
+
+def _pil_rgb_to_gray_hw1_like_prep(input_image: Image.Image) -> np.ndarray:
+    rgb = np.array(input_image.convert("RGB"))
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    img_norm = cv2.normalize(bgr, None, 0, 255, cv2.NORM_MINMAX).astype("uint8")
+    return np.float32(cv2.cvtColor(img_norm, cv2.COLOR_BGR2GRAY))[..., None]
+
+
+def _extract_patches_32_aligned(keypoints_xy: np.ndarray, gray_hw1: np.ndarray):
+    m = _NINJADESC_PATCH_MARGIN
+    h, w = gray_hw1.shape[0], gray_hw1.shape[1]
+    patches = []
+    kpts = []
+    for kp in keypoints_xy:
+        c = int(round(float(kp[0])))
+        r = int(round(float(kp[1])))
+        if r > m - 1 and c > m - 1 and r + m < h and c + m < w:
+            p = gray_hw1[r - m : r + m, c - m : c + m, :]
+            patches.append(p.transpose(2, 0, 1))
+            kpts.append([float(c), float(r)])
+    if not patches:
+        return np.zeros((1, 1, 32, 32), dtype=np.float32), np.zeros((1, 2), dtype=np.float32)
+    return np.stack(patches, axis=0).astype(np.float32), np.asarray(kpts, dtype=np.float32)
 
 
 class BaseSparseDescriptorDataset(Dataset, ABC):
@@ -125,19 +164,23 @@ class BaseSparseDescriptorDataset(Dataset, ABC):
         return out['keypoints'][0].numpy(), out['descriptors'][0].numpy().T
 
     @torch.no_grad()
-    def create_conditioning_tensor(self, keypoints, descriptors, mode='direct',
-                                   training=False, aggregate=False):
+    def create_conditioning_tensor(self, keypoints, descriptors, mode='direct', training=False, aggregate=False, max_keypoints=None):
         h = w = self.resolution
         eps = 1e-7
 
+        n_keep = None
         if training:
             random_factor = np.random.rand()
-            num_keypoints = self.num_keypoints_training_mid // 2
-            num_keypoints = int(num_keypoints * (1 + random_factor))
-            idxs = np.random.permutation(len(keypoints))[:num_keypoints]
-            keypoints = keypoints[idxs]
-            descriptors = descriptors[idxs]
-            
+            n_keep = int((self.num_keypoints_training_mid // 2) * (1 + random_factor))
+        if max_keypoints is not None:
+            n_keep = max_keypoints if n_keep is None else min(n_keep, max_keypoints)
+        if n_keep is not None:
+            n_keep = min(n_keep, self.max_keypoints_extraction)
+            if n_keep < len(keypoints):
+                idxs = np.random.permutation(len(keypoints))[:n_keep]
+                keypoints = keypoints[idxs]
+                descriptors = descriptors[idxs]
+
         if isinstance(descriptors, torch.Tensor):
             descriptors = descriptors.cpu().numpy()
 
@@ -189,8 +232,8 @@ class BaseSparseDescriptorDataset(Dataset, ABC):
             keypoints = np.random.permutation(keypoints)[:self.max_keypoints_extraction]
 
         keypoints = torch.from_numpy(keypoints[:, :2].copy()).to(conditioning_tensor.dtype).clone()
-        keypoints /= torch.tensor([h, w], dtype=conditioning_tensor.dtype)
-        
+        keypoints /= torch.tensor([w, h], dtype=conditioning_tensor.dtype)
+
         return conditioning_tensor, keypoints
 
     @abstractmethod
@@ -235,4 +278,80 @@ class SparseDescriptorImageDataset(BaseSparseDescriptorDataset):
             "input_image": np.array(image),
             "condition": condition,     # (D, L, L)
             "positions": positions,     # (N, 2) in [0, 1]
+        }
+
+
+class NinjadescImageDataset(BaseSparseDescriptorDataset):
+    """
+    SIFT keypoints, 32x32 patches around them, and NinjaDesc privacy descriptors
+    from the vendored ``submodules.ninjadesc`` loader (base model -> privacy head).
+    """
+
+    def __init__(
+        self,
+        source: Union[str, Path, list],
+        condition: str,
+        resolution: int = 512,
+        downsample_factor: int = 8,
+        aggregate: bool = False,
+        base_desc: str = "sift",
+        device: str = "cuda",
+        privacy_batch_size: int = 256):
+        
+        super().__init__(resolution=resolution, downsample_factor=downsample_factor)
+        self.condition = condition
+        self.aggregate = aggregate
+        self.base_desc = base_desc
+        self.image_paths = _collect_image_paths(source)
+        self.privacy_batch_size = privacy_batch_size
+        self._device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self._runtime_device = None
+        self._privacy = None
+        self._base_model = None
+
+    def _load_privacy_models(self):
+        if self._privacy is not None:
+            return
+        runtime_device = _ninjadesc_runtime_device(self._device)
+        self._runtime_device = runtime_device
+        priv, base = load_ninjadesc_models(self.base_desc)
+        self._privacy = priv.to(runtime_device).eval()
+        self._base_model = base.to(runtime_device).eval()
+
+    @torch.no_grad()
+    def _privacy_descriptors_from_patches(self, patches: torch.Tensor) -> np.ndarray:
+        """patches: (N, 1, 32, 32) float CPU tensor."""
+        self._load_privacy_models()
+        dev = self._runtime_device or _ninjadesc_runtime_device(self._device)
+        outs = []
+        for i in range(0, patches.shape[0], self.privacy_batch_size):
+            chunk = patches[i : i + self.privacy_batch_size].to(dev)
+            base_descs = self._base_model(chunk)
+            outs.append(self._privacy(ensure_2d(base_descs)).cpu())
+        return torch.cat(outs, dim=0).numpy()
+
+    @torch.no_grad()
+    def extract_NINJADESC(self, input_image):
+        input_image = input_image.resize((self.resolution, self.resolution), Image.LANCZOS)
+        keypoints_xy, _sift_desc = self.extract_SIFT(input_image)
+        gray = _pil_rgb_to_gray_hw1_like_prep(input_image)
+        patches_np, keypoints = _extract_patches_32_aligned(keypoints_xy, gray)
+        descriptors = self._privacy_descriptors_from_patches(torch.from_numpy(patches_np))
+        return keypoints, descriptors
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> dict:
+        path = self.image_paths[idx]
+        image = Image.open(path).convert("RGB")
+
+        keypoints, descriptors = self.extract_NINJADESC(image)
+        condition, positions = self.create_conditioning_tensor(keypoints, descriptors, mode='direct', aggregate=self.aggregate)
+
+        return {
+            "image_path": str(path),
+            "input_image": np.array(image),
+            "condition": condition,     
+            "positions": positions,     
         }

@@ -6,7 +6,14 @@ from sklearn.neighbors import NearestNeighbors
 import torch
 
 
-def knn_edge_index(coords: np.ndarray, k: int = 5) -> torch.Tensor:
+def knn_edge_index(coords, k: int = 5) -> torch.Tensor:
+    if isinstance(coords, torch.Tensor):
+        coords = coords.detach().cpu().numpy()
+
+    k = min(k, coords.shape[0] - 1)
+    if k < 1:
+        return torch.zeros((2, 0), dtype=torch.long)
+
     nbrs = NearestNeighbors(n_neighbors=k+1).fit(coords)
     _, indices = nbrs.kneighbors(coords)
     

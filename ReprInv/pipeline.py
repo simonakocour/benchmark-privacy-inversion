@@ -80,31 +80,26 @@ class Representation_Inversion_Diffusion(object):
         self, 
         positions: torch.Tensor, 
         n_bins: int = 8,
-        min_keypoints: int = 100
+        strip_padding: bool = False,
     ) -> torch.Tensor:
-        self._last_positions = positions
-        
+
+        self._last_positions = positions        
         encoder_hidden_states = []
         for position in positions:
-            position = position[position[:, 0] != -1]
-            
-            if position.shape[0] < min_keypoints:
-                tokens = torch.zeros((n_bins * n_bins, self.unet.module.sparse_pixel_graph_encoder.latent_dim if hasattr(self.unet, 'module') else self.unet.sparse_pixel_graph_encoder.latent_dim), 
-                                        device=self.device, 
-                                        dtype=torch.float32)
+            if strip_padding:
+                position = position[position[:, 0] != -1]
 
-                encoder_hidden_states.append(tokens)
-                continue
-            
-            if torch.max(position) == 0.0:
-                pass
-            edge_index = knn_edge_index(position).to(self.device)
-            
             encoder = (
                 self.unet.module.sparse_pixel_graph_encoder 
                 if hasattr(self.unet, 'module') 
                 else self.unet.sparse_pixel_graph_encoder
             )
+
+            if position.shape[0] == 0:        
+                encoder_hidden_states.append(torch.zeros((n_bins * n_bins, encoder.latent_dim), device=self.device, dtype=torch.float32))
+                continue
+
+            edge_index = knn_edge_index(position).to(self.device)
             
             tokens = encoder(
                 position.to(self.device, dtype=torch.float32), 
@@ -137,7 +132,7 @@ class Representation_Inversion_Diffusion(object):
         positions: torch.Tensor
     ) -> torch.Tensor:
         condition = condition.to(self.device, dtype=self.weight_dtype)
-        encoder_hidden_states = self.create_crossatn_conditioning(positions)
+        encoder_hidden_states = self.create_crossatn_conditioning(positions, strip_padding=True)
         noisy_latents, noise_info = self.create_noisy_latent_from_image(input_image)
     
         if self.cfg_dropout_p is not None and self.cfg_dropout_p > 0.0:
@@ -188,7 +183,7 @@ class Representation_Inversion_Diffusion(object):
         else:
             generator = torch.Generator(device=self.device).manual_seed(seed)
 
-        in_channels = (self.unet.module.in_channels if hasattr(self.unet, 'module') else self.unet.in_channels)
+        in_channels = (self.unet.module.config.in_channels if hasattr(self.unet, 'module') else self.unet.config.in_channels)
         latents = torch.randn(
             (1, in_channels, self.resolution // downsample_factor, self.resolution // downsample_factor),
             generator=generator,

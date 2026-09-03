@@ -4,7 +4,7 @@ model_type: diffusion
 default_condition: AASE_SIFT, AASE_SUPERPOINT
 base_model_name: mpietran/privacy_inversion/submodules/stable-diffusion-2-1
 hf_repo: mpietran/privacy_inversion
-weights_file: sparse_descriptors_obfuscation_inversion_model.pth
+weights_file: sparse_descriptor_obfuscation_inversion.pth
 
 #model params
 lora_rank: 64

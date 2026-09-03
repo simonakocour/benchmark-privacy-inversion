@@ -26,6 +26,13 @@ _CONDITION_ALIASES = {
 }
 
 
+def resolve_internal_condition(config: dict, condition: str) -> str:
+    ### Map a user entered condition to the task key the UNet was built with.
+    if config.get("ninjadesc"):
+        return "SIFT"
+    return _CONDITION_ALIASES.get(condition, condition)
+
+
 def _remap_conv_in_keys(state_dict: dict, condition: str) -> dict:
     remapped = state_dict.copy()
     for key, value in state_dict.items():
@@ -105,8 +112,7 @@ def load_model(config: dict, condition: str, device: str) -> Representation_Inve
 
     pipe = Representation_Inversion_Diffusion(unet, vae, scheduler)
     pipe.to(device, torch.float32)
-    internal_condition = "SIFT" if config.get("ninjadesc") else _CONDITION_ALIASES.get(condition, condition)
-    pipe.set_condition(internal_condition)
+    pipe.set_condition(resolve_internal_condition(config, condition))
     pipe.eval()
 
     return pipe

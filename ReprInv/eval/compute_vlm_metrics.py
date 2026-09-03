@@ -152,22 +152,39 @@ def compute_vlm_metrics(
         pred_obj_raw = _generate(vlm, processor, _object_prompt(pred_pil))
         gt_obj   = _parse_list(gt_obj_raw)
         pred_obj = _parse_list(pred_obj_raw)
-        or_score, _, _, _ = _match_items(gt_obj, pred_obj, embed_model, object_threshold)
+        or_score, or_n, or_total, or_matches = _match_items(gt_obj, pred_obj, embed_model, object_threshold)
 
         # Texture recovery
         gt_tex_raw   = _generate(vlm, processor, _texture_prompt(gt_pil))
         pred_tex_raw = _generate(vlm, processor, _texture_prompt(pred_pil))
         gt_tex   = _parse_list(gt_tex_raw)
         pred_tex = _parse_list(pred_tex_raw)
-        tr_score, _, _, _ = _match_items(gt_tex, pred_tex, embed_model, texture_threshold)
+        tr_score, tr_n, tr_total, tr_matches = _match_items(gt_tex, pred_tex, embed_model, texture_threshold)
 
         # Scene recognition
         gt_desc   = _generate(vlm, processor, _scene_desc_prompt(gt_pil))
         pred_desc = _generate(vlm, processor, _scene_desc_prompt(pred_pil))
         sr_score  = _scene_similarity(gt_desc, pred_desc, embed_model)
 
+        # Log VLM outputs
+        generations = {
+            "objects": {
+                "gt_raw": gt_obj_raw, "pred_raw": pred_obj_raw,
+                "gt_items": gt_obj, "pred_items": pred_obj,
+                "matches": [{"gt": g, "pred": p, "similarity": s} for g, p, s in or_matches],
+                "n_matched": or_n, "n_gt": or_total,
+            },
+            "textures": {
+                "gt_raw": gt_tex_raw, "pred_raw": pred_tex_raw,
+                "gt_items": gt_tex, "pred_items": pred_tex,
+                "matches": [{"gt": g, "pred": p, "similarity": s} for g, p, s in tr_matches],
+                "n_matched": tr_n, "n_gt": tr_total,
+            },
+            "scene": {"gt_raw": gt_desc, "pred_raw": pred_desc},
+        }
+
         per_image.append({"image_idx": int(idx), "or": or_score, "tr": tr_score,
-                          "sr": sr_score})
+                          "sr": sr_score, "generations": generations})
 
     def _agg(key):
         vals = [m[key] for m in per_image]

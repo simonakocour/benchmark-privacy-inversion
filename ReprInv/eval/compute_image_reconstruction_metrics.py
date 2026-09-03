@@ -26,11 +26,11 @@ def _gray_lpips_pair(pred_np: np.ndarray, gt_np: np.ndarray, device):
 
 class _ReconstructionAccumulator:
 
-    def __init__(self, device):
+    def __init__(self, device, include_fid: bool = True):
         self.device = device
         self.lpips_fn = LPIPS().to(device)
         self.lpips_fn.eval()
-        self.fid = FrechetInceptionDistance(feature=2048, normalize=True).to(device)
+        self.fid = (FrechetInceptionDistance(feature=2048, normalize=True).to(device) if include_fid else None)
 
         self.ssims, self.lpips_vals = [], []
 
@@ -53,15 +53,16 @@ class _ReconstructionAccumulator:
             gt_t = torch.nn.functional.interpolate(
                 gt_t, size=pred_t.shape[-2:], mode="bilinear", align_corners=False
             ).clamp(0, 1)
-        self.fid.update(gt_t,   real=True)
-        self.fid.update(pred_t, real=False)
+        if self.fid is not None:
+            self.fid.update(gt_t,   real=True)
+            self.fid.update(pred_t, real=False)
 
     def summarize(self):
         n = len(self.ssims)
         agg = {
             "SSIM":       np.mean(self.ssims),
             "LPIPS":      np.mean(self.lpips_vals),
-            "FID":        self.fid.compute().item(),
+            "FID":        (self.fid.compute().item() if self.fid is not None and n >= 2 else float("nan")),
             "num_images": n,
         }
         per_image = [
@@ -71,8 +72,8 @@ class _ReconstructionAccumulator:
         return agg, per_image
 
 
-def compute_image_reconstruction_metrics(recons_ims: list, gt_ims: list, device: str = "cpu"):
-    acc = _ReconstructionAccumulator(torch.device(device))
+def compute_image_reconstruction_metrics(recons_ims: list, gt_ims: list, device: str = "cpu", include_fid: bool = True):
+    acc = _ReconstructionAccumulator(torch.device(device), include_fid=include_fid)
     for pred_np, gt_np in zip(recons_ims, gt_ims):
         acc.update(pred_np, gt_np)
     return acc.summarize()

@@ -47,6 +47,7 @@ per_image_metrics.txt
 # OS
 .DS_Store
 Thumbs.db
+.fuse_hidden*
 
 # Claude Code session data
 .claude/

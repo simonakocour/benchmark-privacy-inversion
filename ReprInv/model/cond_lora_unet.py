@@ -133,6 +133,7 @@ class UNet2DConditionModelConditionalLora(UNet2DConditionModel):
         self.tasks = tasks
         self.n_tasks = len(tasks)
         original_conv_weights = self.conv_in.weight.data.clone()
+        original_conv_bias = self.conv_in.bias.data.clone()
         
         self.convs_in = nn.ModuleDict({})
         for input_dim, task in zip(input_dims, tasks):
@@ -144,7 +145,8 @@ class UNet2DConditionModelConditionalLora(UNet2DConditionModel):
             )
             with torch.no_grad():
                 conv_in.weight[:, :4, :, :] = original_conv_weights
-                conv_in.weight[:, 4:, :, :].normal_(0, 0.02)
+                conv_in.weight[:, 4:, :, :].zero_()
+                conv_in.bias.copy_(original_conv_bias)
             self.convs_in.update({task: conv_in})
 
         self.loras_dict = nn.ModuleDict({})

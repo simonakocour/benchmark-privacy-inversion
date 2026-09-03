@@ -42,3 +42,7 @@ sentencepiece==0.2.1
 # Utilities
 tqdm==4.67.1
 PyYAML==6.0.2
+
+# NinjaDesc privacy descriptors (joint .ckpt files are Lightning checkpoints
+# whose pickled hyper_parameters reference omegaconf)
+omegaconf
