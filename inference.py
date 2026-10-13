@@ -14,6 +14,8 @@ _DESCRIPTOR_DIMS = {
     "SIFT": 128, "SUPERPOINT": 256, "XFEAT": 64,
     "SIFT_privacy": 128, "SUPERPOINT_privacy": 256,
     "SIFT_ninjadesc": 128,
+    "ALIKED": 128,
+    "LOMA": 256,
 }
 
 _CONDITION_ALIASES = {
@@ -85,11 +87,14 @@ def load_model(config: dict, condition: str, device: str) -> Representation_Inve
     )
     unet.add_sparse_pixel_graph_encoder()
 
-    ckpt_path = hf_hub_download(
-        repo_id=config["hf_repo"],
-        filename=config["weights_file"],
-        token=token,
-    )
+    if config.get("weights_path"):  # a locally trained checkpoint
+        ckpt_path = config["weights_path"]
+    else:
+        ckpt_path = hf_hub_download(
+            repo_id=config["hf_repo"],
+            filename=config["weights_file"],
+            token=token,
+        )
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = ckpt["unet_state_dict"]
     state_dict = _remap_conv_in_keys(state_dict, condition)
@@ -97,7 +102,12 @@ def load_model(config: dict, condition: str, device: str) -> Representation_Inve
         k: v for k, v in state_dict.items()
         if ".lora_layer." not in k and "conv_in." not in k
     }
-    unet.load_state_dict(state_dict, strict=False)
+    missing, unexpected = unet.load_state_dict(state_dict, strict=False)
+    # conv_in is set from convs_in by switch_lora; lora_layer modules are registered by switch_lora too.
+    missing = [k for k in missing if not k.startswith("conv_in.")]
+    print(f"Loaded {ckpt_path}: {len(state_dict)} tensors, missing {len(missing)}, unexpected {len(unexpected)}")
+    if missing or unexpected:
+        raise RuntimeError(f"checkpoint does not match the model: missing {missing[:5]}, unexpected {unexpected[:5]}")
 
     base_scheduler = DDPMScheduler.from_pretrained(pretrained, subfolder=_sf("scheduler"), token=token)
     if schedule_type == "spatial":

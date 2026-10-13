@@ -6,7 +6,9 @@ from typing import Union
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
+from lightglue import ALIKED
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 
@@ -15,7 +17,10 @@ from submodules.ninjadesc.loader import BASE_DESCRIPTORS, ensure_2d, load_ninjad
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True 
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-DESCRIPTOR_DIMS = {"SIFT": 128, "SUPERPOINT": 256, "XFEAT": 64}
+DESCRIPTOR_DIMS = {"SIFT": 128, "SUPERPOINT": 256, "XFEAT": 64, "ALIKED": 128, "LOMA": 256}
+# Upright ALIKED as in descover-code (descover/features.py): LightGlue aliked-n16, 2048-keypoint cap.
+ALIKED_MODEL = "aliked-n16"
+ALIKED_MAX_KEYPOINTS = 2048
 _NINJADESC_PATCH_MARGIN = 16
 
 
@@ -83,6 +88,9 @@ class BaseSparseDescriptorDataset(Dataset, ABC):
 
         self.xfeat = None
         self.superpoint = None
+        self.aliked = None
+        self.aliked_device = "cpu"
+        self.loma_features = {}
 
         self.image_transforms = T.Compose([
             T.Resize((self.resolution, self.resolution), interpolation=T.InterpolationMode.BILINEAR),
@@ -101,16 +109,41 @@ class BaseSparseDescriptorDataset(Dataset, ABC):
             'SIFT': self.extract_SIFT,
             'SUPERPOINT': self.extract_SUPERPOINT,
             'XFEAT': self.extract_XFEAT,
+            'ALIKED': self.extract_ALIKED,
         }
 
     _extractors = {
         "SIFT": "extract_SIFT",
         "SUPERPOINT": "extract_SUPERPOINT",
         "XFEAT": "extract_XFEAT",
+        "ALIKED": "extract_ALIKED",
     }
 
-    def _extract(self, image: Image.Image):
+    def _extract(self, image: Image.Image, path=None):
+        if self.condition == "LOMA":
+            return self.extract_LOMA(image, path)
         return getattr(self, self._extractors[self.condition])(image)
+
+    def set_loma_features(self, features_dirs):
+        """Index cached LoMa features (descover .npz, keyed by image stem) for the LOMA condition."""
+        self.loma_features = {p.stem: p for d in features_dirs for p in Path(d).glob("*.npz")}
+
+    def _frame_size(self, w, h):
+        """Aspect-preserving frame with the longest side at the resolution (descover-code's working frame)."""
+        scale = self.resolution / max(w, h)
+        return max(1, round(w * scale)), max(1, round(h * scale))
+
+    def _frame_to_square(self, xy, frame_w, frame_h):
+        """Keypoints from the aspect-preserving frame into the resolution x resolution square."""
+        return xy * np.array([self.resolution / frame_w, self.resolution / frame_h], dtype=np.float32)
+
+    def extract_LOMA(self, input_image, path):
+        """LoMa-B (DaD keypoints, DeDoDe-G descriptors, 256-d) as cached by descover-code on the aspect-preserving
+        frame, like extract_ALIKED, and scaled into the square. LoMa is not run here; its extraction is in
+        descover-code."""
+        feats = np.load(self.loma_features[Path(path).stem])
+        xy = self._frame_to_square(feats["xy"].astype(np.float32), *self._frame_size(*input_image.size))
+        return xy, feats["desc"].astype(np.float32)
 
     def _init_xfeat(self):
         if self.xfeat is None:
@@ -126,6 +159,27 @@ class BaseSparseDescriptorDataset(Dataset, ABC):
             self.superpoint = SuperPoint()
             self.superpoint.to("cpu")
             self.superpoint.eval()
+
+    def _init_aliked(self):
+        if self.aliked is None:
+            self.aliked = ALIKED(model_name=ALIKED_MODEL, max_num_keypoints=ALIKED_MAX_KEYPOINTS).eval()
+            self.aliked.to(self.aliked_device)
+
+    @torch.no_grad()
+    def extract_ALIKED(self, input_image):
+        """ALIKED on the aspect-preserving frame (longest side = resolution, LightGlue's default
+        preprocessing), then keypoints scaled into the resolution x resolution square that the
+        other conditions and the target image use. The squashed image is never fed to ALIKED."""
+        self._init_aliked()
+        image = input_image.convert("RGB")
+        frame_w, frame_h = self._frame_size(*image.size)
+        if (frame_w, frame_h) != image.size:
+            image = image.resize((frame_w, frame_h), Image.Resampling.BILINEAR)
+        image_torch = torch.from_numpy(np.asarray(image, dtype=np.float32) / 255.0).permute(2, 0, 1).contiguous()
+        feats = self.aliked.extract(image_torch.to(self.aliked_device))
+        xy = feats["keypoints"][0].float().cpu().numpy()
+        desc = F.normalize(feats["descriptors"][0].float(), dim=-1).cpu().numpy()
+        return self._frame_to_square(xy, frame_w, frame_h), desc
 
     @torch.no_grad()
     def extract_XFEAT(self, input_image):
@@ -253,12 +307,17 @@ class SparseDescriptorImageDataset(BaseSparseDescriptorDataset):
         resolution: int = 512,
         downsample_factor: int = 8,
         aggregate: bool = False,
+        aliked_device: str = "cpu",
+        loma_features=(),
     ):
         if condition not in DESCRIPTOR_DIMS:
             raise ValueError(f"Unknown condition '{condition}'. Choose from {list(DESCRIPTOR_DIMS)}.")
         super().__init__(resolution=resolution,downsample_factor=downsample_factor)
         self.condition = condition
         self.aggregate = aggregate
+        self.aliked_device = aliked_device
+        if condition == "LOMA":
+            self.set_loma_features(loma_features)
         self.image_paths = _collect_image_paths(source)
 
     def __len__(self):
@@ -268,7 +327,7 @@ class SparseDescriptorImageDataset(BaseSparseDescriptorDataset):
         path = self.image_paths[idx]
         image = Image.open(path).convert("RGB")
 
-        keypoints, descriptors = self._extract(image)
+        keypoints, descriptors = self._extract(image, path)
         condition, positions = self.create_conditioning_tensor(
             keypoints, descriptors, mode='direct', aggregate=self.aggregate
         )

@@ -19,9 +19,10 @@ from ReprInv.eval import compute_vlm_metrics, compute_image_reconstruction_metri
 from inference import load_model, resolve_internal_condition
 
 SEGMENTATION_CONDITIONS = ["segloc", "sam", "gsff", "adek", "ppnesf"]
-DESCRIPTOR_CONDITIONS = ["SIFT", "SUPERPOINT", "XFEAT"]
+DESCRIPTOR_CONDITIONS = ["SIFT", "SUPERPOINT", "XFEAT", "ALIKED", "LOMA"]
 NINJADESC_CONDITIONS = ["SIFT_ninjadesc"]
-DESCRIPTOR_DIMS = {"SIFT": 128, "SUPERPOINT": 256, "XFEAT": 64}
+DESCRIPTOR_DIMS = {"SIFT": 128, "SUPERPOINT": 256, "XFEAT": 64, "ALIKED": 128, "LOMA": 256}
+LOCAL_CONDITIONS = {"ALIKED", "LOMA"}  # no released weights: evaluated from a locally trained --checkpoint
 
 def run_inversion(pipe, dataloader, condition, device, **pipe_kwargs):
     pipe.set_condition(condition)
@@ -112,6 +113,10 @@ def main():
     parser.add_argument("--save_images", action="store_true")
     parser.add_argument("--n_variability_seeds", type=int, default=10, help="Seeds per image for variability")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--checkpoint", default=None,
+                        help="locally trained checkpoint (required for ALIKED and LOMA, which have no released weights)")
+    parser.add_argument("--loma_features", nargs="+", default=[],
+                        help="folders of cached descover-code LoMa features (.npz per image stem) for LOMA")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -133,6 +138,18 @@ def main():
         dataloader = torch.utils.data.DataLoader(dataset, shuffle=False, batch_size=1, num_workers=0)
         inversion_model_config = "segmentation_diffusion.yaml"
 
+    elif args.condition == "ALIKED":
+        dataset = SparseDescriptorImageDataset(args.input, args.condition, aggregate=args.aggregate,
+                                               aliked_device=args.device)
+        dataloader = torch.utils.data.DataLoader(dataset, shuffle=False, batch_size=1, num_workers=0)
+        inversion_model_config = "aliked_diffusion.yaml"
+
+    elif args.condition == "LOMA":
+        dataset = SparseDescriptorImageDataset(args.input, args.condition, aggregate=args.aggregate,
+                                               loma_features=args.loma_features)
+        dataloader = torch.utils.data.DataLoader(dataset, shuffle=False, batch_size=1, num_workers=0)
+        inversion_model_config = "loma_diffusion.yaml"
+
     elif args.condition in DESCRIPTOR_CONDITIONS:
         dataset = SparseDescriptorImageDataset(args.input, args.condition, aggregate=args.aggregate)
         dataloader = torch.utils.data.DataLoader(dataset, shuffle=False, batch_size=1, num_workers=0)
@@ -152,6 +169,10 @@ def main():
     config_path = Path("configs/models") / inversion_model_config
     with open(config_path) as f:
         config = yaml.safe_load(f)
+    if args.checkpoint:
+        config["weights_path"] = args.checkpoint
+    if args.condition in LOCAL_CONDITIONS and not config.get("weights_path"):
+        raise ValueError(f"{args.condition} has no released weights; pass --checkpoint")
     print(f"Loading model [{config.get('name')}]  condition={args.condition}")
     model = load_model(config, args.condition, args.device)
 
