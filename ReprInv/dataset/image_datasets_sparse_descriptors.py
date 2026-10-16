@@ -125,8 +125,13 @@ class BaseSparseDescriptorDataset(Dataset, ABC):
         return getattr(self, self._extractors[self.condition])(image)
 
     def set_loma_features(self, features_dirs):
-        """Index cached LoMa features (descover .npz, keyed by image stem) for the LOMA condition."""
-        self.loma_features = {p.stem: p for d in features_dirs for p in Path(d).glob("*.npz")}
+        """Index cached LoMa features (descover .npz, keyed by image stem) for the LOMA condition.
+
+        Stems must be unique across ``features_dirs``: one image name maps to exactly one feature file."""
+        paths = [p for d in features_dirs for p in Path(d).glob("*.npz")]
+        self.loma_features = {p.stem: p for p in paths}
+        if len(self.loma_features) != len(paths):
+            raise ValueError(f"duplicate image stems across LoMa feature folders {list(features_dirs)}")
 
     def _frame_size(self, w, h):
         """Aspect-preserving frame with the longest side at the resolution (descover-code's working frame)."""

@@ -65,7 +65,7 @@ def build_datasets(args):
         aggregate=args.aggregate,
         max_images=args.num_val_images,
         num_positions=args.num_positions,
-        loma_features=args.loma_features,
+        loma_features=args.loma_val_features or args.loma_features,
     )
     return train_set, val_set
 
@@ -319,7 +319,9 @@ def main():
     parser.add_argument("--aggregate", action="store_true")
     parser.add_argument("--extractor_device", default="cuda")
     parser.add_argument("--loma_features", nargs="+", default=[],
-                        help="folders of cached descover-code LoMa features (.npz per image stem) for LOMA")
+                        help="folders of cached descover-code LoMa features (.npz per image stem) for LOMA training")
+    parser.add_argument("--loma_val_features", nargs="+", default=[],
+                        help="LoMa feature folders of the validation images (default: --loma_features)")
 
     # should not be modified
     parser.add_argument("--resolution", type=int, default=512)
